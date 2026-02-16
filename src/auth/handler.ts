@@ -233,12 +233,8 @@ app.get('/callback', async (c) => {
 		)
 
 		// Exchange the code for tokens with enhanced error handling
-		oauthLogger.info(
-			'Exchanging authorization code for tokens with state parameter for PKCE',
-		)
+		oauthLogger.info('Exchanging authorization code for tokens')
 		try {
-			// Pass the stateParam directly to EnhancedTokenManager.exchangeCode
-			// EnhancedTokenManager will handle extracting the code_verifier from it
 			await auth.exchangeCode(code, stateParam)
 		} catch (exchangeError) {
 			oauthLogger.error('Token exchange failed', {
@@ -300,26 +296,29 @@ app.get('/callback', async (c) => {
 			return c.json(jsonResponse, errorInfo.status as any)
 		}
 
-		// Migrate token from clientId-based key to schwabUserId-based key
+		// Save token under BOTH clientId and schwabUserId keys
+		// This ensures any session can find the tokens
 		try {
 			const currentTokenData = await kvToken.load({
 				clientId: clientIdFromState,
 			})
 			if (currentTokenData) {
-				// Save under schwabUserId key
+				// Save under schwabUserId key (primary)
 				await kvToken.save({ schwabUserId: userIdFromSchwab }, currentTokenData)
-				oauthLogger.info('Token migrated to schwabUserId key', {
-					fromKeyPrefix: sanitizeKeyForLog(
+				// ALSO keep under clientId key (for sessions without schwabUserId in props)
+				await kvToken.save({ clientId: clientIdFromState }, currentTokenData)
+				oauthLogger.info('Token saved under both keys', {
+					clientIdKey: sanitizeKeyForLog(
 						kvToken.kvKey({ clientId: clientIdFromState }),
 					),
-					toKeyPrefix: sanitizeKeyForLog(
+					schwabUserIdKey: sanitizeKeyForLog(
 						kvToken.kvKey({ schwabUserId: userIdFromSchwab }),
 					),
 				})
 			}
 		} catch (migrationError) {
 			oauthLogger.warn(
-				'Token migration failed, continuing with authorization',
+				'Token save failed, continuing with authorization',
 				{
 					error:
 						migrationError instanceof Error
