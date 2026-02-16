@@ -29,16 +29,25 @@ export function makeKvTokenStore<T = any>(kv: KVNamespace): KvTokenStore<T> {
 		autoMigrate: true,
 	})
 
+	// Generate key helper
+	const generateKey = (ids: TokenIdentifiers): string => {
+		if (ids.schwabUserId) return `${TOKEN_KEY_PREFIX}${ids.schwabUserId}`
+		if (ids.clientId) return `${TOKEN_KEY_PREFIX}${ids.clientId}`
+		throw new Error('No identifier provided for token key')
+	}
+
 	return {
 		load: async (ids: TokenIdentifiers) => {
-			const result = await sdkStore.load(ids)
-			return result as T | null
+			const key = generateKey(ids)
+			const value = await kv.get(key, 'json')
+			return value as T | null
 		},
 		save: async (ids: TokenIdentifiers, data: T) => {
-			await sdkStore.save(ids, data as any)
+			const key = generateKey(ids)
+			await kv.put(key, JSON.stringify(data), { expirationTtl: TTL_31_DAYS })
 		},
 		kvKey: (ids: TokenIdentifiers) => {
-			return sdkStore.generateKey(ids)
+			return generateKey(ids)
 		},
 		migrate: async (fromIds: TokenIdentifiers, toIds: TokenIdentifiers) => {
 			return sdkStore.migrate(fromIds, toIds)

@@ -43,7 +43,7 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 	private client!: SchwabApiClient
 	private validatedConfig!: ValidatedEnv
 	private mcpLogger = logger.child(LOGGER_CONTEXTS.MCP_DO)
-
+	
 	server = new McpServer({
 		name: APP_NAME,
 		version: '0.0.1',
@@ -65,7 +65,7 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 					],
 				}),
 			)
-			this.validatedConfig = getConfig(this.env)
+				this.validatedConfig = getConfig(this.env)
 			// Initialize logger with configured level
 			const logLevel = this.validatedConfig.LOG_LEVEL as PinoLogLevel
 			const newLogger = buildLogger(logLevel)
@@ -110,19 +110,15 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 				})
 			}
 
-			// Token load function uses KV store exclusively
+			// Token load function - loads from KV using props identifiers
 			const loadTokenForETM = async (): Promise<TokenData | null> => {
 				const tokenIds = getTokenIds()
-				this.mcpLogger.debug('[ETM Load] Attempting to load token', {
+				this.mcpLogger.debug('[ETM Load] Loading token', {
 					hasSchwabUserId: !!tokenIds.schwabUserId,
 					hasClientId: !!tokenIds.clientId,
-					expectedKeyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)),
 				})
-
 				const tokenData = await kvToken.load(tokenIds)
-				this.mcpLogger.debug('ETM: Token load from KV complete', {
-					keyPrefix: sanitizeKeyForLog(kvToken.kvKey(tokenIds)),
-				})
+				this.mcpLogger.debug('ETM: Token load complete', { found: !!tokenData })
 				return tokenData
 			}
 
@@ -160,13 +156,9 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 			this.mcpLogger.debug('[MyMCP.init] STEP 4: MCP Logger adapted.')
 
 			// 2. Proactively initialize ETM to load tokens BEFORE creating client
-			this.mcpLogger.debug(
-				'[MyMCP.init] STEP 5A: Proactively calling this.tokenManager.initialize() (async)...',
-			)
-			const etmInitSuccess = this.tokenManager.initialize()
-			this.mcpLogger.debug(
-				`[MyMCP.init] STEP 5B: Proactive ETM initialization complete. Success: ${etmInitSuccess}`,
-			)
+			this.mcpLogger.debug('[MyMCP.init] Initializing token manager...')
+			const etmInitSuccess = await this.tokenManager.initialize()
+			this.mcpLogger.debug(`[MyMCP.init] Token manager initialized: ${etmInitSuccess}`)
 
 			// 2.5. Auto-migrate tokens if we have schwabUserId but token was loaded from clientId key
 			if (this.props.schwabUserId && this.props.clientId) {
@@ -192,8 +184,8 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 			})
 			this.mcpLogger.debug('[MyMCP.init] STEP 6: SchwabApiClient ready.')
 
-			// 4. Register tools (this.server.tool calls are synchronous)
-			this.mcpLogger.debug('[MyMCP.init] STEP 7A: Calling registerTools...')
+			// 4. Register tools
+			this.mcpLogger.debug(`[MyMCP.init] Registering ${allToolSpecs.length} tools...`)
 			allToolSpecs.forEach((spec: ToolSpec<any>) => {
 				createTool(this.client, this.server, {
 					name: spec.name,
@@ -213,19 +205,10 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 					},
 				})
 			})
-			this.mcpLogger.debug('[MyMCP.init] STEP 7B: registerTools completed.')
-			this.mcpLogger.debug(
-				'[MyMCP.init] STEP 8: MyMCP.init FINISHED SUCCESSFULLY',
-			)
+			this.mcpLogger.debug('[MyMCP.init] Tool registration complete')
 		} catch (error: any) {
-			this.mcpLogger.error(
-				'[MyMCP.init] FINAL CATCH: UNHANDLED EXCEPTION in init()',
-				{
-					error: error.message,
-					stack: error.stack,
-				},
-			)
-			throw error // Re-throw to ensure DO framework sees the failure
+			this.mcpLogger.error('Init failed', { error: error.message })
+			// Don't re-throw - allow DO to continue with basic "status" tool
 		}
 	}
 
@@ -323,6 +306,14 @@ export class MyMCP extends DurableMCP<MyMCPProps, Env> {
 	}
 
 	async onSSE(event: any) {
+		// Wait for init to complete - workers-mcp doesn't await _init() before calling onSSE
+		// This ensures all tools are registered before the MCP connection starts
+		let attempts = 0
+		while (!this.client && attempts < 50) {
+			await new Promise(resolve => setTimeout(resolve, 100))
+			attempts++
+		}
+
 		this.mcpLogger.info('SSE connection established or reconnected')
 		await this.onReconnect()
 		return await super.onSSE(event)
